@@ -46,13 +46,13 @@ def test_arabic_document_direction_and_text():
 
 
 def test_mixed_line_reads_in_logical_order():
-    doc = docsift.read(PDF / "invoice_mixed.pdf")
+    doc = docsift.read(PDF / "order_mixed.pdf")
     assert "Date / التاريخ: 2025-03-14 (١٣ رمضان ١٤٤٦)" in doc.text.splitlines()
 
 
 def test_narrative_text_excludes_tables():
     doc = docsift.read(PDF / "ruled_en.pdf")
-    assert "Order ledger" in doc.text and "Figures in USD." in doc.text
+    assert "Weekly orders" in doc.text and "Prepared automatically from the order system." in doc.text
     assert "ORD-1000" not in doc.text
 
 
@@ -151,7 +151,7 @@ def test_token_report_orders_formats():
 
 # ── LLM backend: wiring only (no paid calls) ───────────────────────────────────
 
-CANNED = """# Order ledger
+CANNED = """# Weekly orders
 Branch: North.
 
 ```tsv table=orders page_start=1 page_end=1
@@ -175,7 +175,7 @@ def test_llm_backend_gets_pdf_and_prompt_and_retries_once():
     (t,) = doc.tables
     assert (t.name, t.method, t.pages) == ("orders", "llm", [1])
     assert t.rows == [["2025-07-21", "ORD-1000", "550.41"], ["2025-02-12", "ORD-1001", None]]
-    assert doc.text == "# Order ledger\nBranch: North." and doc.stats["backend"] == "llm"
+    assert doc.text == "# Weekly orders\nBranch: North." and doc.stats["backend"] == "llm"
     assert doc.pages == 1 and doc.stats["attempts"] == 2
 
 

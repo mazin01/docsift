@@ -41,7 +41,7 @@ def _table(name: str, grid: list[list], method: str) -> Table | None:
     grid = [r + [None] * (width - len(r)) for r in grid]
     keep = [i for i in range(width) if any(r[i] is not None for r in grid)]
     grid = [[r[i] for i in keep] for r in grid]
-    # Title rows ("Company statement", merged across the top) have one value; skip them.
+    # Title rows ("Quarterly sales report", merged across the top) have one value; skip them.
     while len(grid) > 1 and len(keep) > 1 and sum(v is not None for v in grid[0]) == 1:
         grid.pop(0)
     seen, header = Counter(), []

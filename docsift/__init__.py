@@ -1,7 +1,7 @@
 """docsift: turn PDFs, CSVs and spreadsheets into compact, LLM-ready context.
 
     import docsift
-    doc = docsift.read("statement.pdf")
+    doc = docsift.read("report.pdf")
     print(doc.render())          # profile + 5 sample rows per table, markdown
     doc.tables[0].to_pandas()    # all rows
 """

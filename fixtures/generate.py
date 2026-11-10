@@ -91,7 +91,7 @@ def html_table(rows: list[list[str]], cls: str, numeric_cols: set[int]) -> str:
     return f'<table class="{cls}"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
 
 
-def ledger(n: int, items: list[str], header: list[str], arabic_digits: bool = False) -> list[list[str]]:
+def orders(n: int, items: list[str], header: list[str], arabic_digits: bool = False) -> list[list[str]]:
     rows = [header]
     for i in range(n):
         qty = rng.randint(1, 40)
@@ -110,46 +110,46 @@ AR_HEADER = ["التاريخ", "المرجع", "البيان", "الكمية", "
 
 
 def ruled_en() -> None:
-    t = ledger(12, EN_ITEMS, EN_HEADER)
-    html_to_pdf("ruled_en", "<h2>Order ledger</h2><p>Branch: North. Period: 2025.</p>"
-                + html_table(t, "ruled", {3, 4}) + "<p>Prepared automatically. Figures in USD.</p>")
+    t = orders(12, EN_ITEMS, EN_HEADER)
+    html_to_pdf("ruled_en", "<h2>Weekly orders</h2><p>Branch: North. Period: 2025.</p>"
+                + html_table(t, "ruled", {3, 4}) + "<p>Prepared automatically from the order system.</p>")
     write_truth("ruled_en", [t])
 
 
 def borderless_en() -> None:
-    t = ledger(15, EN_ITEMS, EN_HEADER)
-    html_to_pdf("borderless_en", "<h2>Account activity</h2><p>Statement for customer 4471.</p>"
+    t = orders(15, EN_ITEMS, EN_HEADER)
+    html_to_pdf("borderless_en", "<h2>Dispatch log</h2><p>Warehouse North, week 14.</p>"
                 + html_table(t, "plain", {3, 4}))
     write_truth("borderless_en", [t])
 
 
 def multipage_en() -> None:
-    t = ledger(90, EN_ITEMS, EN_HEADER)
+    t = orders(90, EN_ITEMS, EN_HEADER)
     html_to_pdf("multipage_en", "<h2>Annual order register</h2>" + html_table(t, "ruled", {3, 4}))
     write_truth("multipage_en", [t])
 
 
 def ruled_ar() -> None:
-    t = ledger(12, AR_ITEMS, AR_HEADER, arabic_digits=True)
+    t = orders(12, AR_ITEMS, AR_HEADER, arabic_digits=True)
     html_to_pdf("ruled_ar", "<h2>سجل الطلبات</h2><p>الفرع: الشمال. الفترة: ٢٠٢٥.</p>"
                 + html_table(t, "ruled", {3, 4}), rtl=True)
     write_truth("ruled_ar", [t])
 
 
-def invoice_mixed() -> None:
+def order_mixed() -> None:
     items = [["Item / الصنف", "Qty / الكمية", "Unit price / سعر الوحدة", "Total / الإجمالي"]]
     for en, ar in rng.sample(list(zip(EN_ITEMS, AR_ITEMS)), 5):
         qty, price = rng.randint(1, 10), rng.randint(500, 20_000) / 100
         items.append([f"{en} - {ar}", str(qty), f"{price:,.2f}", f"{qty * price:,.2f}"])
     meta = (
-        "<h2>Invoice / فاتورة</h2>"
-        "<p>Invoice no. / رقم الفاتورة: INV-2025-0042</p>"
+        "<h2>Purchase order / أمر شراء</h2>"
+        "<p>Order no. / رقم الطلب: PO-2025-0042</p>"
         "<p>Date / التاريخ: 2025-03-14 (١٣ رمضان ١٤٤٦)</p>"
         "<p>Customer / العميل: Example Trading Co. / شركة المثال التجارية</p>"
     )
-    html_to_pdf("invoice_mixed", meta + html_table(items, "ruled", {1, 2, 3})
+    html_to_pdf("order_mixed", meta + html_table(items, "ruled", {1, 2, 3})
                 + "<p>Thank you for your business. شكراً لتعاملكم معنا.</p>")
-    write_truth("invoice_mixed", [items])
+    write_truth("order_mixed", [items])
 
 
 def visual_order_ar() -> None:
@@ -162,7 +162,7 @@ def visual_order_ar() -> None:
     from reportlab.pdfgen import canvas
 
     pdfmetrics.registerFont(TTFont("Amiri", str(font("Amiri-Regular.ttf"))))
-    t = ledger(8, AR_ITEMS, AR_HEADER)
+    t = orders(8, AR_ITEMS, AR_HEADER)
     c = canvas.Canvas(str(OUT / "visual_order_ar.pdf"), pagesize=A4, invariant=1)
     w, h = A4
     visual = lambda s: get_display(arabic_reshaper.reshape(s))  # noqa: E731
@@ -198,6 +198,6 @@ def scanned() -> None:
 
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
-    for make in (ruled_en, borderless_en, multipage_en, ruled_ar, invoice_mixed, visual_order_ar, scanned):
+    for make in (ruled_en, borderless_en, multipage_en, ruled_ar, order_mixed, visual_order_ar, scanned):
         make()
         print("ok", make.__name__)
