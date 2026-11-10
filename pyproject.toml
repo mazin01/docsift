@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "docsift"
+version = "0.1.0"
+description = "Turn PDFs, CSVs and spreadsheets (Arabic/English) into compact, LLM-ready context."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "pdfplumber>=0.11",
+    "openpyxl>=3.1",
+    "xlrd>=2.0",
+    "nuqta @ git+https://github.com/mazin01/nuqta",
+]
+
+[project.optional-dependencies]
+tokens = ["tiktoken>=0.7"]
+pandas = ["pandas>=2", "pyarrow>=15"]
+test = ["pytest>=8", "tiktoken>=0.7", "pandas>=2"]
+fixtures = ["reportlab>=4", "arabic-reshaper>=3", "python-bidi>=0.6"]
+
+[project.scripts]
+docsift = "docsift.__main__:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["docsift"]
