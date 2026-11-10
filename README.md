@@ -87,7 +87,7 @@ pdfplumber scores 0% on Arabic because every cell comes out reversed and the col
 | fixture | raw text | JSON records | markdown, all rows | TSV, all rows | default context |
 |---|---:|---:|---:|---:|---:|
 | borderless_en.pdf | 322 | 639 | 465 | 397 | 314 |
-| invoice_mixed.pdf | 226 | 235 | 245 | 220 | 349 |
+| invoice_mixed.pdf | 226 | 235 | 247 | 222 | 351 |
 | multipage_en.pdf | 1868 | 3823 | 2445 | 2077 | 313 |
 | ruled_ar.pdf | 355 | 650 | 433 | 388 | 342 |
 | ruled_en.pdf | 265 | 505 | 388 | 332 | 324 |
@@ -95,21 +95,38 @@ pdfplumber scores 0% on Arabic because every cell comes out reversed and the col
 
 Reading the numbers honestly:
 
-- **TSV is the cheapest lossless format**, about 40% fewer tokens than JSON records and about 14% fewer than markdown (3,666 vs 6,268 vs 4,259 across all fixtures).
+- **TSV is the cheapest lossless format**, about 40% fewer tokens than JSON records and about 14% fewer than markdown (3,668 vs 6,268 vs 4,261 across all fixtures).
 - **The default context pays off on real tables.** On the 90-row register it costs 313 tokens, against 3,823 for JSON (12× less) and 1,868 for the raw text dump. Its size depends on the number of columns, not rows.
-- **On tiny documents it costs more than raw text.** The one-page invoice needs 349 tokens versus 226, because the column profile is overhead when there are only 5 rows. Use `rows=None, profile=False` there. Either way the raw text is the version with the Arabic reversed.
+- **On tiny documents it costs more than raw text.** The one-page invoice needs 351 tokens versus 226, because the column profile is overhead when there are only 5 rows. Use `rows=None, profile=False` there. Either way the raw text is the version with the Arabic reversed.
 
 Reproduce with `python bench/run.py`.
+
+### Tested on real documents
+
+The fixtures are synthetic. docsift was also checked by hand against public Arabic PDFs made with Adobe InDesign: a regulator's guide to financial statements, a 346-page bilingual national statistical yearbook, and a UN regional report. Those files aren't redistributed here. Each one exposed a quirk that the fixtures didn't have, and each is now handled and covered by a unit test:
+
+| Real-world quirk | Symptom | Fix |
+|---|---|---|
+| Ligature glyphs mapped to 2+ letters (`لم`, `لا`, `في`) | `املركز` instead of `المركز` | multi-letter glyphs are pre-flipped before reordering |
+| Ligature spelled as a wide glyph + zero-width parts | `محافظ يت` | zero-width parts are folded into the host glyph |
+| Diacritics narrower than their letter | `مف ّصلة`, `ُيعزى` | marks get their letter's box; reordering keeps letter + marks together |
+| Brackets stored as typed, not as displayed | `)موجوداتها(` | per line, take the bracket reading that balances (`nuqta`, `mirror="auto"`) |
+| Rotated running titles in the margin | reversed `kooB raeY lacitsitatS` on every page | a minority of rotated text on a page is dropped as decoration |
+| Decorative boxes | empty "tables" | ruled tables need at least one data cell |
+| Multi-row headers with merged group labels | `col_1 … col_13` | number-free leading rows become `Group / Sub-column` names |
+| Data rows without vertical rules | `16,642 0 38 0 …` in one cell | numbers are spread over the empty cells beside them, only on an exact count match |
 
 ## How it works
 
 **Local PDF backend** (default, no network):
 
+0. **Glyph cleanup:** ligature and diacritic fixes from the table above, and rotated margin text dropped.
 1. **Ruled tables** come from pdfplumber's line and rectangle detection.
 2. **Borderless tables** come from what's left of the page. Words are grouped into phrases, and lines with 3 or more phrases form a table block. Column boundaries are the x ranges that no phrase crosses, which works the same for left-, right- and RTL-aligned columns. A left-aligned header over right-aligned numbers is merged back into one column.
-3. **Multi-page tables** are joined when the next page repeats the header. They're also joined when a same-width table is the last on one page and the first on the next, with no repeated header.
-4. **Reading order:** each cell and line goes through [`nuqta.visual_to_logical`](https://github.com/mazin01/nuqta#how-visual_to_logical-works) using the document's direction (majority of letters, or `direction=`). RTL tables get their column order reversed. Shaped presentation-form glyphs are NFKC-folded back into letters.
-5. **Narrative text** is everything outside the tables. Running headers and footers (lines repeated on half the pages or more) are kept once.
+3. **Headers:** up to 3 leading rows without numbers form the header when there's numeric data below. Merged group labels are carried over their sub-columns.
+4. **Multi-page tables** are joined when the next page repeats the header. They're also joined when a same-width table is the last on one page and the first on the next, with no repeated header.
+5. **Reading order:** each cell and line goes through [`nuqta.visual_to_logical`](https://github.com/mazin01/nuqta#how-visual_to_logical-works) using the document's direction (majority of letters, or `direction=`). RTL tables get their column order reversed. Shaped presentation-form glyphs are NFKC-folded back into letters.
+6. **Narrative text** is everything outside the tables. Running headers and footers (lines repeated on half the pages or more) are kept once.
 
 **Optional LLM backend:** pass any callable `llm(pdf_bytes, prompt) -> str`. The model is asked for markdown plus fenced TSV blocks (`` ```tsv table=<name> page_start=<n> page_end=<n> ``), which keeps its *output* tokens low and parses reliably even with prose around the blocks. If nothing parses, docsift retries once with a stricter prompt. The core has no SDK dependency.
 
@@ -181,6 +198,8 @@ Errors are `docsift.DocsiftError` with `.code` and `.details`.
 - The borderless detector needs 3 or more columns and 3 or more lines, with columns separated by roughly a word-height of whitespace. Dense layouts can merge columns.
 - Headerless multi-page continuation is a heuristic: two different same-width tables split by a page break get merged (pass `pages=` to separate them).
 - Document direction is one value per document, so a mostly-English PDF containing an Arabic-only table reads that table LTR. Pass `direction=`.
+- docsift reports what the PDF's text layer says. When a font maps a glyph to the wrong character (one real report adds stray shaddas), or leaves kashida glyphs unmapped (`�`, flagged by `BROKEN_FONT_MAPPING`), copy-pasting from a PDF viewer gives the same text.
+- Header detection stops at the first row containing a number, so a header row of years (`2023 | 2024`) under a group label isn't merged into the column names.
 - Everything is held in memory, which is fine for documents and slow for million-row CSVs.
 
 ## Use cases

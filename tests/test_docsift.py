@@ -196,3 +196,60 @@ def test_parse_response_edge_cases():
     assert [t.name for t in tables] == ["جدول", "جدول_2"]  # Unicode names kept, deduped
     assert tables[0].rows == [["قلم", "5"]]                 # literal "\t" accepted
     assert text == ""                                       # header-only block dropped, no narrative
+
+
+# ── quirks found in real InDesign-produced Arabic PDFs (synthetic glyph data) ──
+
+from types import SimpleNamespace
+
+from docsift.pdf import _fix_glyphs, _split_header, _spread_numbers
+
+
+def glyph(text, x0, x1, top=100.0, size=10.0):
+    return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": top + size, "doctop": top, "size": size}
+
+
+def test_ligature_glyph_is_preflipped_so_reversal_restores_it():
+    page = SimpleNamespace(chars=[glyph("لم", 10, 20)])
+    _fix_glyphs(page)
+    assert page.chars[0]["text"] == "مل"
+    assert _clean("مل", "rtl") == "لم"
+
+
+def test_zero_width_ligature_parts_fold_into_their_host_glyph():
+    host, part, space = glyph("ت", 10, 16), glyph("ي", 13, 13, top=103), glyph(" ", 14, 14, top=97)
+    page = SimpleNamespace(chars=[host, part, space])
+    _fix_glyphs(page)
+    assert host["text"] == "يت" and part["text"] == "" and space["text"] == ""  # "تي", pre-flipped
+    assert (part["x0"], part["top"]) == (host["x0"], host["top"])
+
+
+def test_mark_takes_the_box_of_the_letter_centred_under_it():
+    wide, letter, mark = glyph("ف", 0, 14), glyph("ص", 6, 12), glyph("ّ", 8.6, 9.4, top=96)
+    page = SimpleNamespace(chars=[wide, letter, mark])
+    _fix_glyphs(page)
+    assert (mark["x1"], mark["top"]) == (letter["x1"], letter["top"])
+
+
+def test_multi_row_header_with_merged_group_label():
+    cells = [
+        [None, None, None, None],
+        ["Region", "Total", "Fishery", None],
+        [None, None, "North", "South"],
+        ["A", "10", "4", "6"],
+    ]
+    cols, rows = _split_header(cells)
+    assert cols == ["Region", "Total", "Fishery / North", "Fishery / South"]
+    assert rows == [["A", "10", "4", "6"]]
+
+
+def test_single_header_row_when_no_numbers_below():
+    cols, rows = _split_header([["Name", "City"], ["Ali", "Muscat"], ["Sara", "Sohar"]])
+    assert cols == ["Name", "City"] and len(rows) == 2
+
+
+def test_numbers_packed_into_one_cell_are_spread_only_on_exact_fit():
+    assert _spread_numbers(["Emperor", "16,642 0 38", None, None, "شعري"]) == \
+        ["Emperor", "16,642", "0", "38", "شعري"]
+    assert _spread_numbers(["x", "1 2 3", None, "y"]) == ["x", "1 2 3", None, "y"]  # 3 numbers, 2 slots
+    assert _spread_numbers(["x", "Paper clips", None]) == ["x", "Paper clips", None]

@@ -19,6 +19,7 @@ MIN_ALIGNED_COLUMNS = 3
 MIN_ALIGNED_ROWS = 3                            # header + 2 data rows
 LINE_TOLERANCE = 3                              # pt: words this close vertically share a line
 PHRASE_GAP = 0.8                                # × median word height: wider gaps split cells
+ZERO_WIDTH = 0.05                               # pt: narrower glyphs are ligature parts, not letters
 
 
 def parse_pages(pages, total: int) -> list[int]:
@@ -47,14 +48,60 @@ def _direction(text: str) -> str:
 
 
 def _clean(text, base: str):
-    """Extracted (visual-order) text → logical, single-line, NFKC'd if shaped glyphs."""
+    """Extracted (visual-order) text → logical, single-line, NFC (NFKC if shaped glyphs)."""
     if text is None:
         return None
     text = _CID_RE.sub("�", text)
-    s = " ".join(line.strip() for line in nq.visual_to_logical(text, base).split("\n") if line.strip())
-    if nq.has_presentation_forms(s):
-        s = unicodedata.normalize("NFKC", s)
+    s = " ".join(nq.visual_to_logical(text, base).split())
+    s = unicodedata.normalize("NFKC" if nq.has_presentation_forms(s) else "NFC", s)
     return s or None
+
+
+def _is_rtl(text: str) -> bool:
+    return any(unicodedata.bidirectional(c) in ("R", "AL") for c in text)
+
+
+def _is_mark(text: str) -> bool:
+    return bool(text) and all(unicodedata.bidirectional(c) == "NSM" for c in text)
+
+
+def _fix_glyphs(page) -> None:
+    """Undo two glyph-level quirks of real Arabic PDFs, in place, before extraction.
+
+    1. Ligature glyphs map to several letters already in logical order ("لم", "لا",
+       "في"); the visual→logical reversal would flip them, so pre-flip them.
+    2. A combining mark (shadda, kasra...) sits inside its letter's box but is
+       narrower, so extractors see a gap after it and insert a space. Give the mark
+       its letter's box so it sorts right after the letter and opens no gap.
+    pdfplumber shares these char dicts with every derived/cropped page.
+    """
+    chars = page.chars
+    letters = [c for c in chars if not _is_mark(c["text"]) and c["x1"] - c["x0"] >= ZERO_WIDTH]
+    # 0. Some producers spell a ligature as one wide glyph plus zero-width glyphs
+    #    (letters, even spaces) placed inside it. Fold them into the wide glyph.
+    for c in chars:
+        if c["x1"] - c["x0"] >= ZERO_WIDTH or _is_mark(c["text"]):
+            continue
+        host = next((b for b in letters if b["x0"] <= c["x0"] <= b["x1"]
+                     and abs(b["bottom"] - c["bottom"]) <= b["size"]), None)
+        if host:
+            if not c["text"].isspace():
+                host["text"] += c["text"]
+            c.update(x0=host["x0"], x1=host["x1"], top=host["top"], bottom=host["bottom"], doctop=host["doctop"])
+        c["text"] = ""
+    for c in chars:
+        t = c["text"]
+        if len(t) > 1 and _is_rtl(t) and not _CID_RE.fullmatch(t):
+            c["text"] = t[::-1]
+        elif _is_mark(t):
+            mid = (c["x0"] + c["x1"]) / 2
+            # Arabic glyph boxes overlap; the mark belongs to the letter centred under it.
+            base = min((b for b in letters if b["x0"] <= mid <= b["x1"]
+                        and abs(b["bottom"] - c["bottom"]) <= b["size"]),
+                       key=lambda b: abs((b["x0"] + b["x1"]) / 2 - mid), default=None)
+            if base:
+                c.update(x0=base["x0"] + 0.001, x1=base["x1"], top=base["top"],
+                         bottom=base["bottom"], doctop=base["doctop"])
 
 
 # ── table finders: both return [(bbox, raw_rows)] in visual (left→right) order ───
@@ -63,7 +110,8 @@ def _ruled_tables(page) -> list:
     out = []
     for t in page.find_tables():
         raw = t.extract()
-        if len(raw) >= 2 and len(raw[0]) >= 2:
+        has_data = any(c not in (None, "") for r in raw[1:] for c in r)  # decorative boxes have none
+        if len(raw) >= 2 and len(raw[0]) >= 2 and has_data:
             out.append((t.bbox, raw))
     return out
 
@@ -126,13 +174,54 @@ def _aligned_tables(page) -> list:
 
 # ── assembly ───────────────────────────────────────────────────────────────────
 
-def _header(raw_row, base) -> list[str]:
+MAX_HEADER_ROWS = 3
+
+
+def _spread_numbers(row: list) -> list:
+    """Tables ruled only in the header pack a data row's numbers into one cell
+    ("16,642 0 38") followed by empty cells. Spread them out, but only when the
+    count matches the empty cells exactly."""
+    out, j = list(row), 0
+    while j < len(out):
+        toks = out[j].split() if out[j] else []
+        k = j + 1
+        while k < len(out) and out[k] is None:
+            k += 1
+        if len(toks) > 1 and len(toks) == k - j and all(nq.to_number(t) is not None for t in toks):
+            out[j:k] = toks
+            j = k
+        else:
+            j += 1
+    return out
+
+
+def _split_header(cells: list[list]) -> tuple[list[str], list[list]]:
+    """Cleaned grid → (column names, data rows).
+
+    Leading empty rows are skipped. When numbers appear below, the header is the
+    leading number-free rows (up to MAX_HEADER_ROWS), as in statistical tables
+    with merged group headings: a merged label is carried over the columns
+    beneath it and parts are joined with " / ".
+    """
+    while len(cells) > 1 and all(c is None for c in cells[0]):
+        cells = cells[1:]
+    numeric = lambda row: any(c is not None and nq.to_number(c) is not None for c in row)  # noqa: E731
+    n = 1
+    if any(numeric(r) for r in cells[1:]):
+        while n < min(MAX_HEADER_ROWS, len(cells) - 1) and not numeric(cells[n]):
+            n += 1
+    head = [list(r) for r in cells[:n]]
+    for i in range(n - 1):  # carry merged group labels right, over their sub-columns
+        for j in range(1, len(head[i])):
+            if head[i][j] is None and head[i][j - 1] is not None and any(head[k][j] for k in range(i + 1, n)):
+                head[i][j] = head[i][j - 1]
     cols, seen = [], Counter()
-    for i, c in enumerate(raw_row):
-        name = _clean(c, base) or f"col_{i + 1}"
+    for j in range(len(cells[0])):
+        parts = list(dict.fromkeys(h[j] for h in head if h[j]))
+        name = " / ".join(parts) or f"col_{j + 1}"
         seen[name] += 1
         cols.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
-    return cols
+    return cols, cells[n:]
 
 
 def _strip_repeated_lines(pages_lines: list[list[str]]) -> list[list[str]]:
@@ -174,6 +263,10 @@ def read_pdf(path, pages=None, direction: str = "auto") -> Document:
 
         found, page_lines, scanned, broken = [], [], [], Counter()
         for pno, page in zip(wanted, plumbed):
+            if 0 < sum(not c["upright"] for c in page.chars) < len(page.chars) / 2:
+                # A minority of rotated text is margin decoration (running titles,
+                # stamps); a mostly-rotated page is real content and is kept.
+                page = page.filter(lambda o: o.get("object_type") != "char" or o.get("upright", True))
             chars = page.chars
             if not "".join(c["text"] for c in chars).strip():
                 scanned.append(pno)
@@ -182,6 +275,7 @@ def read_pdf(path, pages=None, direction: str = "auto") -> Document:
             bad = sum(bool(_CID_RE.fullmatch(c["text"]) or _BAD_CHAR_RE.search(c["text"])) for c in chars)
             if bad:
                 broken[pno] = bad
+            _fix_glyphs(page)
             tables = [(b, r, "ruled") for b, r in _ruled_tables(page)]
             rest = page
             for bbox, _r, _m in tables:
@@ -200,8 +294,8 @@ def read_pdf(path, pages=None, direction: str = "auto") -> Document:
         for pno, first_on_page, last_on_page, raw, method in found:
             if base == "rtl":
                 raw = [list(reversed(r)) for r in raw]  # columns were read left→right
-            header = _header(raw[0], base)
-            rows = [[_clean(c, base) for c in r] for r in raw[1:]]
+            cells = [_spread_numbers([_clean(c, base) for c in r]) for r in raw]
+            header, rows = _split_header(cells)
             prev = result[-1] if result else None
             if prev and prev.pages[-1] == pno - 1 and len(header) == len(prev.columns) and prev.method == method:
                 if header == prev.columns:  # repeated header on the next page
@@ -213,7 +307,7 @@ def read_pdf(path, pages=None, direction: str = "auto") -> Document:
                     # ponytail: headerless continuation = same width, same method, last table of the
                     # previous page and first of this one. Two different same-width tables split by a
                     # page break get merged; pass pages= to read them separately.
-                    prev.rows += [[_clean(c, base) for c in raw[0]], *rows]
+                    prev.rows += cells
                     prev.pages.append(pno)
                     last_was_last = last_on_page
                     continue
